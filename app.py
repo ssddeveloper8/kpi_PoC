@@ -15,7 +15,6 @@ def ask_api(query: str = Body(..., media_type="text/plain")):
 
     parsed = parse_query_with_llm(query)
 
-    # store raw query
     parsed["raw_query"] = query
 
     # fallback KPI detection
@@ -25,7 +24,7 @@ def ask_api(query: str = Body(..., media_type="text/plain")):
     if not parsed["kpi_name"]:
         return {"error": "KPI not detected"}
 
-    # handle time logic
+    # handle relative time
     parsed = handle_relative_dates(parsed)
 
     result = handle_kpi_query(parsed, connections)

@@ -35,7 +35,9 @@ def build_time_filter(start_date, end_date):
     return " AND ".join(conditions)
 
 
-def get_kpi_values(conn, alias, agg, start_date=None, end_date=None):
+def get_kpi_values(conn, alias, agg_list, start_date=None, end_date=None):
+
+    table_name = "tbl_kpi_historian_data"
 
     time_filter = build_time_filter(start_date, end_date)
 
@@ -44,39 +46,33 @@ def get_kpi_values(conn, alias, agg, start_date=None, end_date=None):
     if time_filter:
         where_clause += f" AND {time_filter}"
 
-    if agg == "avg":
-        sql = f"""
-        SELECT 
-            COUNT(value) as total_points,
-            AVG(value) as avg_value
-        FROM tbl_current_kpi_historian_data
-        WHERE {where_clause};
-        """
+    select_parts = []
 
-    elif agg == "max":
-        sql = f"""
-        SELECT MAX(value) as value
-        FROM tbl_current_kpi_historian_data
-        WHERE {where_clause};
-        """
+    if "avg" in agg_list:
+        select_parts.append("AVG(value) AS avg_value")
 
-    elif agg == "min":
-        sql = f"""
-        SELECT MIN(value) as value
-        FROM tbl_current_kpi_historian_data
-        WHERE {where_clause};
-        """
+    if "max" in agg_list:
+        select_parts.append("MAX(value) AS max_value")
 
-    else:
+    if "min" in agg_list:
+        select_parts.append("MIN(value) AS min_value")
+
+    if not select_parts:
+        # fallback latest
         sql = f"""
-        SELECT 
-            value,
-            to_timestamp(epoch_seconds) as timestamp
-        FROM tbl_current_kpi_historian_data
+        SELECT value, to_timestamp(epoch_seconds) as timestamp
+        FROM {table_name}
         WHERE {where_clause}
         ORDER BY epoch_seconds DESC
         LIMIT 1;
         """
+        return execute_sql(conn, sql)
+
+    sql = f"""
+    SELECT {", ".join(select_parts)}
+    FROM {table_name}
+    WHERE {where_clause};
+    """
 
     return execute_sql(conn, sql)
 
@@ -99,13 +95,6 @@ def handle_relative_dates(parsed):
         parsed["end_date"] = today.strftime("%Y-%m-%d")
         return parsed
 
-    date_match = re.search(r"(\d{2}-\d{2}-\d{4})", query)
-    if date_match:
-        d = datetime.strptime(date_match.group(1), "%d-%m-%Y")
-        parsed["start_date"] = d.strftime("%Y-%m-%d")
-        parsed["end_date"] = d.strftime("%Y-%m-%d")
-        return parsed
-
     if "today" in query:
         parsed["start_date"] = today.strftime("%Y-%m-%d")
         parsed["end_date"] = today.strftime("%Y-%m-%d")
@@ -115,7 +104,11 @@ def handle_relative_dates(parsed):
 
 def handle_kpi_query(parsed, connections):
     kpi_name = parsed["kpi_name"]
-    agg = parsed["aggregation"]
+    agg = parsed.get("aggregation")
+
+    if isinstance(agg, str):
+        agg = [agg]
+        
     start_date = parsed.get("start_date")
     end_date = parsed.get("end_date")
 
@@ -129,7 +122,7 @@ def handle_kpi_query(parsed, connections):
     values = get_kpi_values(
         connections["historian"],
         alias,
-        agg,
+        agg,   
         start_date,
         end_date
     )
