@@ -3,11 +3,11 @@ from datetime import datetime, timedelta
 import re
 
 
-def get_kpi_metadata(conn, kpi_name):
+def get_tag_metadata(conn, tag_name):
     sql = f"""
     SELECT *
-    FROM tbl_kpi_engine_kpi_calculation
-    WHERE LOWER(kpi_name) = LOWER('{kpi_name}')
+    FROM tbl_cfg_opc_hda_tag_config
+    WHERE LOWER(tag_name) = LOWER('{tag_name}')
     LIMIT 1;
     """
     return execute_sql(conn, sql)
@@ -35,13 +35,40 @@ def build_time_filter(start_date, end_date):
     return " AND ".join(conditions)
 
 
-def get_kpi_values(conn, alias, agg_list, start_date=None, end_date=None):
+def normalize_agg(agg):
+    if not agg:
+        return ["latest"]
 
-    table_name = "tbl_kpi_historian_data"
+    if isinstance(agg, str):
+        agg = [agg]
+
+    mapping = {
+        "average": "avg",
+        "mean": "avg",
+        "avg": "avg",
+        "maximum": "max",
+        "max": "max",
+        "minimum": "min",
+        "min": "min",
+        "latest": "latest"
+    }
+
+    return [mapping.get(a.lower(), a.lower()) for a in agg]
+
+
+def get_tag_values(conn, tag_id, agg_list, start_date=None, end_date=None):
+
+    table_name = "tbl_tag_historian_data"
 
     time_filter = build_time_filter(start_date, end_date)
 
-    where_clause = f"alise = '{alias}'"
+    where_clause = f"""
+    tag_id = '{tag_id}'
+    AND value IS NOT NULL
+    AND value::text != 'NaN'
+    AND value::text != 'Infinity'
+    AND value::text != '-Infinity'
+    """
 
     if time_filter:
         where_clause += f" AND {time_filter}"
@@ -75,25 +102,6 @@ def get_kpi_values(conn, alias, agg_list, start_date=None, end_date=None):
 
     return execute_sql(conn, sql)
 
-def normalize_agg(agg):
-    if not agg:
-        return ["latest"]
-
-    if isinstance(agg, str):
-        agg = [agg]
-
-    mapping = {
-        "average": "avg",
-        "mean": "avg",
-        "avg": "avg",
-        "maximum": "max",
-        "max": "max",
-        "minimum": "min",
-        "min": "min",
-        "latest": "latest"
-    }
-
-    return [mapping.get(a.lower(), a.lower()) for a in agg]
 
 def handle_relative_dates(parsed):
     today = datetime.today()
@@ -108,18 +116,16 @@ def handle_relative_dates(parsed):
     return parsed
 
 
-def handle_kpi_query(parsed, connections):
+def handle_tag_query(parsed, connections):
 
-    kpi_name = parsed["kpi_name"]
-    agg = parsed.get("aggregation")
+    tag_name = parsed["tag_name"]
 
-    if isinstance(agg, str):
-        agg = [agg]
+    agg = normalize_agg(parsed.get("aggregation"))
 
     start_date = parsed.get("start_date")
     end_date = parsed.get("end_date")
 
-    meta = get_kpi_metadata(connections["builder"], kpi_name)
+    meta = get_tag_metadata(connections["builder"], tag_name)
 
     if isinstance(meta, dict) and "error" in meta:
         return {
@@ -128,16 +134,16 @@ def handle_kpi_query(parsed, connections):
         }
 
     if not meta or not isinstance(meta, list):
-        return {"error": "KPI not found"}
+        return {"error": "Tag not found"}
 
-    alias = meta[0].get("alise")
+    tag_id = meta[0].get("tag_id")
 
-    if not alias:
-        return {"error": "Alias not found for KPI"}
+    if not tag_id:
+        return {"error": "tag_id not found for tag"}
 
-    values = get_kpi_values(
+    values = get_tag_values(
         connections["historian"],
-        alias,
+        tag_id,
         agg,
         start_date,
         end_date
@@ -147,7 +153,7 @@ def handle_kpi_query(parsed, connections):
 
     if is_aggregation:
         response = {
-            "kpi_result": values
+            "tag_result": values
         }
 
         if start_date or end_date:
@@ -158,8 +164,6 @@ def handle_kpi_query(parsed, connections):
 
         return response
 
-
     return {
-        "kpi_info": meta
+        "tag_info": meta
     }
-    
