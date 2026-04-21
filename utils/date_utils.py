@@ -22,6 +22,9 @@ def build_time_filter(start_date, end_date):
     return " AND ".join(conditions)
 
 
+import re
+from datetime import datetime, timedelta
+
 def handle_relative_dates(parsed):
     today = datetime.today()
     query = parsed.get("raw_query", "").lower()
@@ -30,6 +33,12 @@ def handle_relative_dates(parsed):
     if match:
         d = int(match.group(1))
         parsed["start_date"] = (today - timedelta(days=d)).strftime("%Y-%m-%d")
+        parsed["end_date"] = today.strftime("%Y-%m-%d")
+
+    match = re.search(r"last (\d+) months?", query)
+    if match:
+        m = int(match.group(1))
+        parsed["start_date"] = (today - timedelta(days=30*m)).strftime("%Y-%m-%d")
         parsed["end_date"] = today.strftime("%Y-%m-%d")
 
     return parsed

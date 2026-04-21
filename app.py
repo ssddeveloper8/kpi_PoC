@@ -1,98 +1,65 @@
 from fastapi import FastAPI, Body
-import re
 
 from db.connection import get_connections
-from llm.llm_client import parse_query_with_llm
-from kpi.kpi_service import handle_kpi_query, handle_relative_dates
-from kpi.kpi_parser import extract_kpi_name_fallback
-from tag.tag_service import handle_tag_query
-from tag.tag_parser import extract_tag_name_fallback
+from core.llm import parse_query
+from core.entity import detect_entity, split_entities
+from core.intent import detect_intent
+from core.query_engine import handle_query
+
+from utils.aggregation import normalize_agg, extract_agg_from_query
+from utils.date_utils import handle_relative_dates
 
 app = FastAPI()
-
 connections = get_connections()
 
-def split_entities(value):
-    if not value:
-        return []
-
-    if isinstance(value, list):
-        return value
-
-    value = re.sub(r"(average|max|min|kpi|tag|of)", "", value, flags=re.IGNORECASE)
-
-    parts = re.split(r",| and ", value)
-
-    return [p.strip() for p in parts if p.strip()]
-
-def is_compare_query(query: str):
-    return any(word in query.lower() for word in ["compare", "vs", "versus"])
 
 @app.post("/ask")
-def ask_api(query: str = Body(..., media_type="text/plain")):
+def ask(query: str = Body(...)):
 
-    parsed = parse_query_with_llm(query)
+    parsed = parse_query(query)
     parsed["raw_query"] = query
 
-    if "tag" in query.lower():
-        parsed["kpi_name"] = None
+    entity_type, names = detect_entity(parsed, query)
 
-    if "kpi" in query.lower():
-        parsed["tag_name"] = None
+    if not entity_type:
+        return {"error": "No entity detected"}
 
-    kpi_list = split_entities(parsed.get("kpi_name"))
-
-    if not kpi_list:
-        fallback = extract_kpi_name_fallback(query)
-        kpi_list = [fallback] if fallback else []
-
-    tag_list = split_entities(parsed.get("tag_name"))
-
-    if not tag_list:
-        fallback_tag = extract_tag_name_fallback(query)
-        tag_list = [fallback_tag] if fallback_tag else []
-
-    if not kpi_list and not tag_list:
-        return {"error": "No KPI or TAG detected"}
+    names = split_entities(names)
+    names = [n.strip() for n in names if n.strip()]
 
     parsed = handle_relative_dates(parsed)
 
-    compare_mode = is_compare_query(query)
+    llm_agg = normalize_agg(parsed.get("aggregation"))
+    rule_agg = extract_agg_from_query(query)
 
-    results = {}
-    comparison = {}
+    agg = rule_agg if rule_agg else llm_agg
 
-    for kpi in kpi_list:
-        if not kpi:
-            continue
+    if not agg:
+        agg = ["latest"]
+        
+    if not agg:
+        agg = ["latest"]
 
-        parsed["kpi_name"] = kpi
-        result = handle_kpi_query(parsed, connections)
+    intent = detect_intent(parsed, query)
 
-        if compare_mode:
-            comparison[f"kpi:{kpi}"] = result
-        else:
-            results[f"kpi:{kpi}"] = result
+    result = handle_query(parsed, connections, entity_type, names, agg, intent)
 
-    for tag in tag_list:
-        if not tag:
-            continue
+    response = {
+        "query": query,
+        "entity": entity_type,
+        "intent": intent,
+        "results": result
+    }
 
-        parsed["tag_name"] = tag
-        result = handle_tag_query(parsed, connections)
-
-        if compare_mode:
-            comparison[f"tag:{tag}"] = result
-        else:
-            results[f"tag:{tag}"] = result
-
-    if compare_mode:
-        return {
-            "query": query,
-            "comparison": comparison
+    if parsed.get("start_date") or parsed.get("end_date"):
+        response["date_range"] = {
+            "start_date": parsed.get("start_date"),
+            "end_date": parsed.get("end_date")
         }
 
-    return {
-        "query": query,
-        "results": results
-    }
+    print("Parsed:", parsed)
+    print("Names:", names)
+    print("Agg:", agg)
+    print("Intent:", intent)
+
+    return response
